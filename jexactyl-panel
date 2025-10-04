@@ -1,0 +1,91 @@
+#!/bin/bash
+# Jexactyl Panel One-Click Installer (No SSL)
+# Author: RDX / Inkbyte Studios
+
+set -e
+
+echo "🚀 Installing Jexactyl Panel (No SSL Version)..."
+
+# Update packages
+apt update -y && apt upgrade -y
+
+# Install dependencies
+apt install -y nginx mariadb-server redis-server curl git unzip zip php php-cli php-gd php-mysql php-mbstring php-tokenizer php-bcmath php-xml php-fpm php-curl composer
+
+# Install Node.js (LTS)
+curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+apt install -y nodejs
+
+# Configure MariaDB
+mysql -u root -e "CREATE DATABASE jexactyl;"
+mysql -u root -e "CREATE USER 'jexactyl'@'localhost' IDENTIFIED BY 'StrongPassword123';"
+mysql -u root -e "GRANT ALL PRIVILEGES ON jexactyl.* TO 'jexactyl'@'localhost';"
+mysql -u root -e "FLUSH PRIVILEGES;"
+
+# Download Jexactyl
+cd /var/www
+git clone https://github.com/jexactyl/jexactyl.git panel
+cd panel
+
+# Install Composer dependencies
+composer install --no-dev --optimize-autoloader
+
+# Copy environment file
+cp .env.example .env
+
+# Generate app key
+php artisan key:generate --force
+
+# Configure environment (auto)
+sed -i 's/DB_DATABASE=.*/DB_DATABASE=jexactyl/' .env
+sed -i 's/DB_USERNAME=.*/DB_USERNAME=jexactyl/' .env
+sed -i 's/DB_PASSWORD=.*/DB_PASSWORD=StrongPassword123/' .env
+
+# Run migrations
+php artisan migrate --seed --force
+
+# Build frontend
+npm install && npm run build
+
+# Set permissions
+chown -R www-data:www-data /var/www/panel
+chmod -R 755 /var/www/panel
+
+# Nginx config (no SSL)
+cat >/etc/nginx/sites-available/jexactyl.conf <<'EOF'
+server {
+    listen 80;
+    server_name _;
+    root /var/www/panel/public;
+    index index.php;
+    
+    access_log /var/log/nginx/jexactyl_access.log;
+    error_log /var/log/nginx/jexactyl_error.log;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_index index.php;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+
+ln -s /etc/nginx/sites-available/jexactyl.conf /etc/nginx/sites-enabled/
+nginx -t && systemctl restart nginx
+
+# Queue worker setup
+php artisan queue:table
+php artisan queue:work &
+
+echo "✅ Installation Completed!"
+echo "Visit: http://YOUR_SERVER_IP"
+echo "Default credentials will be created via web setup wizard."vs
